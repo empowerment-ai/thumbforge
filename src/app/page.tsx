@@ -65,41 +65,125 @@ export default function Home() {
   const [description, setDescription] = useState("");
   const [analysis, setAnalysis] = useState<VideoAnalysis | null>(null);
   const [thumbnails, setThumbnails] = useState<GeneratedThumbnail[]>([]);
-  const [faceImage, setFaceImage] = useState<string | null>(null);
-  const [facePreview, setFacePreview] = useState<string | null>(null);
+  const [faceImages, setFaceImages] = useState<string[]>([]);
+  const [facePreviews, setFacePreviews] = useState<string[]>([]);
+  const [faceDescription, setFaceDescription] = useState<string | null>(null);
+  const [faceAnalyzing, setFaceAnalyzing] = useState(false);
+  const [faceAnalysisDetails, setFaceAnalysisDetails] = useState<{
+    keyFeatures: string[];
+    photoCount: number;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generatingIndex, setGeneratingIndex] = useState(-1);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle face image upload
+  // Handle face image upload (supports multiple)
   const handleFaceUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
 
-      if (!file.type.startsWith("image/")) {
-        setError("Please upload an image file");
+      const remaining = 5 - faceImages.length;
+      if (remaining <= 0) {
+        setError("Maximum 5 reference photos allowed");
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        setFacePreview(dataUrl);
-        // Extract base64 without the data URL prefix
-        setFaceImage(dataUrl.split(",")[1]);
-      };
-      reader.readAsDataURL(file);
+      const filesToProcess = Array.from(files).slice(0, remaining);
+      
+      for (const file of filesToProcess) {
+        if (!file.type.startsWith("image/")) {
+          setError("Please upload image files only");
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          setFacePreviews((prev) => [...prev, dataUrl]);
+          setFaceImages((prev) => [...prev, dataUrl.split(",")[1]]);
+          // Clear any existing analysis since photos changed
+          setFaceDescription(null);
+          setFaceAnalysisDetails(null);
+        };
+        reader.readAsDataURL(file);
+      }
+
+      // Reset file input so same file can be selected again
+      e.target.value = "";
     },
-    []
+    [faceImages.length]
   );
 
-  // Analyze video
+  // Remove a face photo
+  const removeFacePhoto = useCallback((index: number) => {
+    setFaceImages((prev) => prev.filter((_, i) => i !== index));
+    setFacePreviews((prev) => prev.filter((_, i) => i !== index));
+    setFaceDescription(null);
+    setFaceAnalysisDetails(null);
+  }, []);
+
+  // Analyze uploaded face photos
+  const handleFaceAnalysis = async () => {
+    if (faceImages.length === 0) return;
+    setFaceAnalyzing(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/face-analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ faceImages }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Face analysis failed");
+      }
+
+      setFaceDescription(data.analysis.description);
+      setFaceAnalysisDetails({
+        keyFeatures: data.analysis.keyFeatures,
+        photoCount: data.analysis.photoCount,
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Face analysis failed"
+      );
+    } finally {
+      setFaceAnalyzing(false);
+    }
+  };
+
+  // Analyze video (and face if photos uploaded)
   const handleAnalyze = async () => {
     setError(null);
     setStep("analyzing");
 
     try {
+      // If face photos are uploaded but not yet analyzed, do that first
+      if (faceImages.length > 0 && !faceDescription) {
+        try {
+          const faceResp = await fetch("/api/face-analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ faceImages }),
+          });
+          const faceData = await faceResp.json();
+          if (faceResp.ok && faceData.analysis) {
+            setFaceDescription(faceData.analysis.description);
+            setFaceAnalysisDetails({
+              keyFeatures: faceData.analysis.keyFeatures,
+              photoCount: faceData.analysis.photoCount,
+            });
+          }
+        } catch {
+          // Non-fatal — continue without face analysis
+          console.warn("Face analysis failed, continuing without it");
+        }
+      }
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -135,7 +219,9 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           analysis,
-          faceImageBase64: faceImage,
+          faceImageBase64: faceImages[0] || undefined,
+          faceImages: faceImages.length > 0 ? faceImages : undefined,
+          faceDescription: faceDescription || undefined,
           count: 4,
         }),
       });
@@ -173,6 +259,10 @@ export default function Home() {
     setThumbnails([]);
     setError(null);
     setGeneratingIndex(-1);
+    setFaceImages([]);
+    setFacePreviews([]);
+    setFaceDescription(null);
+    setFaceAnalysisDetails(null);
   };
 
   return (
@@ -291,48 +381,99 @@ export default function Home() {
               </div>
             )}
 
-            {/* Face Upload */}
+            {/* Face Upload — Multi-photo */}
             <div className="mt-4 bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6">
-              <label className="block text-sm font-medium mb-2 text-[var(--text-muted)]">
-                Your Face Photo{" "}
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">
+                Your Reference Photos{" "}
                 <span className="text-[var(--text-muted)] font-normal">
-                  (optional — AI will include your face in thumbnails)
+                  (optional — up to 5 photos for best results)
                 </span>
               </label>
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-2 px-4 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg hover:border-[var(--cyan)] transition-colors text-sm"
-                >
-                  <IconUpload />
-                  Upload Photo
-                </button>
+              <p className="text-xs text-[var(--text-muted)] mb-3">
+                More photos from different angles &amp; lighting = more accurate face in thumbnails. 
+                {faceImages.length === 0 && " At least 1 photo recommended."}
+              </p>
+              <div className="flex items-center gap-4 flex-wrap">
+                {faceImages.length < 5 && (
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2 px-4 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg hover:border-[var(--cyan)] transition-colors text-sm"
+                  >
+                    <IconUpload />
+                    {faceImages.length === 0 ? "Upload Photos" : "Add More"}
+                  </button>
+                )}
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
+                  multiple
                   onChange={handleFaceUpload}
                   className="hidden"
                 />
-                {facePreview && (
-                  <div className="flex items-center gap-3">
+                {facePreviews.map((preview, i) => (
+                  <div key={i} className="relative group">
                     <img
-                      src={facePreview}
-                      alt="Face preview"
+                      src={preview}
+                      alt={`Reference photo ${i + 1}`}
                       className="w-12 h-12 rounded-full object-cover border-2 border-[var(--cyan)]"
                     />
                     <button
-                      onClick={() => {
-                        setFaceImage(null);
-                        setFacePreview(null);
-                      }}
-                      className="text-xs text-[var(--text-muted)] hover:text-red-400"
+                      onClick={() => removeFacePhoto(i)}
+                      className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                     >
-                      Remove
+                      ✕
                     </button>
                   </div>
+                ))}
+                {faceImages.length > 0 && (
+                  <span className="text-xs text-[var(--text-muted)]">
+                    {faceImages.length}/5 photos
+                  </span>
                 )}
               </div>
+
+              {/* Face Analysis Status */}
+              {faceImages.length > 0 && !faceDescription && !faceAnalyzing && (
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    onClick={handleFaceAnalysis}
+                    className="text-xs px-3 py-1.5 bg-[var(--cyan)]/20 text-[var(--cyan)] rounded-lg hover:bg-[var(--cyan)]/30 transition-colors"
+                  >
+                    ✨ Analyze Face
+                  </button>
+                  <span className="text-xs text-[var(--text-muted)]">
+                    AI will study your features for accurate reproduction
+                  </span>
+                </div>
+              )}
+              {faceAnalyzing && (
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="w-3 h-3 bg-[var(--cyan)] rounded-full animate-pulse" />
+                  <span className="text-xs text-[var(--cyan)]">
+                    Analyzing your features...
+                  </span>
+                </div>
+              )}
+              {faceDescription && faceAnalysisDetails && (
+                <div className="mt-3 p-3 bg-[var(--bg-primary)] rounded-lg border border-[var(--green)]/30">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-[var(--green)] font-medium">
+                      ✓ Face analyzed ({faceAnalysisDetails.photoCount} photo{faceAnalysisDetails.photoCount !== 1 ? "s" : ""})
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {faceAnalysisDetails.keyFeatures.slice(0, 5).map((f, i) => (
+                      <span
+                        key={i}
+                        className="text-xs bg-[var(--bg-card)] px-2 py-0.5 rounded text-[var(--text-muted)]"
+                      >
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Analyze Button */}

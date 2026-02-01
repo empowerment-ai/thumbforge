@@ -36,10 +36,13 @@ function buildImagePrompt(
   // Scene description
   parts.push(`Scene: ${concept.description}`);
 
-  // Face/person
+  // Face/person — critical for likeness
   if (faceDescription) {
     parts.push(
-      `The main person in the thumbnail: ${faceDescription}. Their expression should be ${concept.faceExpression}. The person's face should occupy about 30-40% of the frame, positioned on one side with their eyes in the upper third.`
+      `CRITICAL — PERSON IDENTITY: The main person in this thumbnail MUST be this SPECIFIC individual: ${faceDescription}. This is the EXACT person who must appear — do NOT substitute with a different person or generic stock face. Their expression should be ${concept.faceExpression}. The person's face should occupy about 30-40% of the frame, positioned on one side with their eyes in the upper third.`
+    );
+    parts.push(
+      `FACE ACCURACY REMINDER: The person MUST match the reference photo provided. Same face shape, same skin tone, same hair, same distinguishing features. This is a real person — reproduce their likeness faithfully.`
     );
   } else {
     parts.push(
@@ -133,12 +136,17 @@ export async function generateCustomThumbnail(
   prompt: string,
   options: {
     faceImageBase64?: string;
+    faceDescription?: string;
     model?: string;
   } = {}
 ): Promise<GeneratedThumbnail> {
+  const faceBlock = options.faceDescription
+    ? `\n\nCRITICAL — PERSON IDENTITY: The person in this thumbnail MUST be this SPECIFIC individual: ${options.faceDescription}. Match the reference photo exactly — same face, same features, same skin tone. Do NOT substitute with a different person.\n`
+    : "";
+
   const fullPrompt = `Generate a professional YouTube thumbnail image at 1280x720 resolution (16:9 aspect ratio).
 
-${prompt}
+${prompt}${faceBlock}
 
 IMPORTANT: High contrast, single focal point, bold composition. Professional YouTube thumbnail quality. Avoid cluttering the bottom-right corner.`;
 

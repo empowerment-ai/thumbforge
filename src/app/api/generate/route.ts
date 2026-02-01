@@ -8,7 +8,10 @@ import type { VideoAnalysis } from "@/lib/video-analyzer";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { analysis, customPrompt, faceImageBase64, faceDescription, model, count } = body;
+    const { analysis, customPrompt, faceImageBase64, faceImages, faceDescription, model, count } = body;
+
+    // Support both single image (legacy) and multi-image array
+    const primaryFaceImage = faceImageBase64 || (faceImages && faceImages[0]) || undefined;
 
     if (!analysis && !customPrompt) {
       return NextResponse.json(
@@ -22,14 +25,15 @@ export async function POST(request: NextRequest) {
     if (customPrompt) {
       // Single custom thumbnail
       const thumbnail = await generateCustomThumbnail(customPrompt, {
-        faceImageBase64,
+        faceImageBase64: primaryFaceImage,
+        faceDescription,
         model,
       });
       thumbnails = [thumbnail];
     } else {
       // Generate from analysis
       thumbnails = await generateThumbnails(analysis as VideoAnalysis, {
-        faceImageBase64,
+        faceImageBase64: primaryFaceImage,
         faceDescription,
         model,
         count: count || 4,
