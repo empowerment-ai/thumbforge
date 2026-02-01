@@ -10,7 +10,7 @@ export const MODELS = {
   // Text analysis
   ANALYSIS: "anthropic/claude-3.5-sonnet",
   // Image generation
-  IMAGE_FLASH: "google/gemini-2.5-flash-image-preview",
+  IMAGE_FLASH: "google/gemini-2.5-flash-image",
   IMAGE_PRO: "google/gemini-3-pro-image-preview",
   IMAGE_FLUX: "black-forest-labs/flux-pro-1.1",
 } as const;
@@ -24,6 +24,12 @@ interface OpenRouterResponse {
   choices: Array<{
     message: {
       content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+      // OpenRouter returns generated images in a separate `images` array
+      images?: Array<{
+        type: string;
+        image_url: { url: string };
+        index: number;
+      }>;
     };
   }>;
   usage?: {
@@ -88,6 +94,7 @@ export async function generateImage(
     model?: string;
     referenceImageBase64?: string;
     aspectRatio?: string;
+    imageSize?: "1K" | "2K" | "4K";
   } = {}
 ): Promise<{ imageBase64: string; revisedPrompt?: string }> {
   const apiKey = process.env.OPENROUTER_API_KEY;
@@ -107,6 +114,18 @@ export async function generateImage(
     });
   }
 
+  const model = options.model || MODELS.IMAGE_FLASH;
+  const isGemini = model.includes("gemini");
+
+  // Build image_config for aspect ratio and size control (Gemini models)
+  const imageConfig: Record<string, string> = {};
+  if (isGemini) {
+    imageConfig.aspect_ratio = options.aspectRatio || "16:9";
+    if (options.imageSize) {
+      imageConfig.image_size = options.imageSize;
+    }
+  }
+
   const response = await fetch(OPENROUTER_API_URL, {
     method: "POST",
     headers: {
@@ -116,7 +135,7 @@ export async function generateImage(
       "X-Title": "ThumbForge",
     },
     body: JSON.stringify({
-      model: options.model || MODELS.IMAGE_FLASH,
+      model,
       messages: [
         {
           role: "user",
@@ -124,7 +143,8 @@ export async function generateImage(
         },
       ],
       modalities: ["image", "text"],
-      ...(options.model?.includes("gemini") && {
+      ...(Object.keys(imageConfig).length > 0 && { image_config: imageConfig }),
+      ...(isGemini && {
         provider: {
           order: ["google"],
         },
@@ -138,8 +158,31 @@ export async function generateImage(
   }
 
   const data: OpenRouterResponse = await response.json();
-  const content = data.choices[0]?.message?.content;
+  const message = data.choices[0]?.message;
+  if (!message) throw new Error("No message in OpenRouter response");
 
+  // Method 1: Check message.images array (OpenRouter Gemini-style response)
+  if (message.images && message.images.length > 0) {
+    const img = message.images[0];
+    if (img.image_url?.url) {
+      const base64 = img.image_url.url.replace(
+        /^data:image\/\w+;base64,/,
+        ""
+      );
+      const textContent = typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.content)
+          ? message.content.find((p) => p.type === "text")?.text
+          : undefined;
+      return {
+        imageBase64: base64,
+        revisedPrompt: textContent || undefined,
+      };
+    }
+  }
+
+  // Method 2: Check content array for image_url parts (Flux/other models)
+  const content = message.content;
   if (Array.isArray(content)) {
     const imagePart = content.find(
       (p) => p.type === "image_url" && p.image_url?.url
@@ -147,7 +190,6 @@ export async function generateImage(
     const textPart = content.find((p) => p.type === "text");
 
     if (imagePart?.image_url?.url) {
-      // Extract base64 from data URL
       const base64 = imagePart.image_url.url.replace(
         /^data:image\/\w+;base64,/,
         ""

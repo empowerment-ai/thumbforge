@@ -3,7 +3,13 @@
  * Extracts transcript from YouTube URL and analyzes content for thumbnail generation
  */
 
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { textCompletion } from "./openrouter";
+
+const execFileAsync = promisify(execFile);
+
+const VTD_SCRIPT = "/root/clawd/skills/video-transcript-downloader/scripts/vtd.js";
 
 export interface VideoAnalysis {
   title: string;
@@ -27,24 +33,35 @@ export interface ThumbnailConcept {
 }
 
 /**
- * Extract transcript from YouTube video using VTD or fallback
+ * Extract transcript from YouTube video using VTD (video-transcript-downloader)
+ * Primary method: shells out to VTD which uses youtube-transcript-plus
+ * Fallback: free web APIs (often unreliable)
  */
 export async function extractTranscript(youtubeUrl: string): Promise<string> {
-  // Use youtube-transcript-api via a simple fetch to a public API
-  // For server-side, we'll shell out to our VTD tool or use the npm package
-  
-  // Extract video ID from URL
   const videoId = extractVideoId(youtubeUrl);
   if (!videoId) throw new Error("Invalid YouTube URL");
 
-  // Try fetching transcript via youtube-transcript-api endpoint
-  // In production, we'd use the npm package directly
+  // Primary: VTD tool (fast, free, no API key needed)
+  try {
+    const { stdout } = await execFileAsync(
+      "node",
+      [VTD_SCRIPT, "transcript", "--url", youtubeUrl],
+      { timeout: 30000, maxBuffer: 1024 * 1024 }
+    );
+    const transcript = stdout.trim();
+    if (transcript && transcript.length > 20) {
+      return transcript;
+    }
+  } catch {
+    // VTD failed, try web API fallbacks
+  }
+
+  // Fallback 1: youtube-transcript.io
   try {
     const response = await fetch(
       `https://www.youtube-transcript.io/api/transcript?url=${encodeURIComponent(youtubeUrl)}`,
       { signal: AbortSignal.timeout(15000) }
     );
-    
     if (response.ok) {
       const data = await response.json();
       if (data.transcript || data.text) {
@@ -52,26 +69,25 @@ export async function extractTranscript(youtubeUrl: string): Promise<string> {
       }
     }
   } catch {
-    // Fallback below
+    // Continue
   }
 
-  // Fallback: try Supadata free tier
+  // Fallback 2: Supadata
   try {
     const response = await fetch(
       `https://api.supadata.ai/v1/youtube/transcript?url=${encodeURIComponent(youtubeUrl)}`,
       { signal: AbortSignal.timeout(15000) }
     );
-    
     if (response.ok) {
       const data = await response.json();
       if (data.content) {
-        return typeof data.content === "string" 
-          ? data.content 
+        return typeof data.content === "string"
+          ? data.content
           : data.content.map((c: { text: string }) => c.text).join(" ");
       }
     }
   } catch {
-    // Continue to next fallback
+    // Continue
   }
 
   throw new Error(
