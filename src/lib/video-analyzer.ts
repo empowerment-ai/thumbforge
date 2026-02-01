@@ -5,6 +5,7 @@
 
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { YoutubeTranscript } from "youtube-transcript-plus";
 import { textCompletion } from "./openrouter";
 
 const execFileAsync = promisify(execFile);
@@ -33,15 +34,41 @@ export interface ThumbnailConcept {
 }
 
 /**
- * Extract transcript from YouTube video using VTD (video-transcript-downloader)
- * Primary method: shells out to VTD which uses youtube-transcript-plus
- * Fallback: free web APIs (often unreliable)
+ * Extract transcript from YouTube video
+ * Priority: 1) youtube-transcript npm package (works on Vercel)
+ *           2) VTD shell-out (local dev only)
+ *           3) Free web APIs (unreliable fallback)
  */
 export async function extractTranscript(youtubeUrl: string): Promise<string> {
   const videoId = extractVideoId(youtubeUrl);
   if (!videoId) throw new Error("Invalid YouTube URL");
 
-  // Primary: VTD tool (fast, free, no API key needed)
+  // Primary: youtube-transcript-plus npm package (pure Node.js, works on Vercel)
+  try {
+    const segments = await YoutubeTranscript.fetchTranscript(videoId);
+    if (segments && segments.length > 0) {
+      let transcript = segments.map((s) => s.text).join(" ");
+      // Decode HTML entities (may be double-encoded: &amp;#39; → &#39; → ')
+      transcript = transcript
+        .replace(/&amp;/g, "&")
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/\[♪♪♪\]/g, "")
+        .replace(/♪/g, "")
+        .replace(/\[Music\]/gi, "")
+        .trim()
+        .replace(/\s+/g, " ");
+      if (transcript.length > 20) {
+        return transcript;
+      }
+    }
+  } catch {
+    // npm package failed, try VTD fallback
+  }
+
+  // Fallback 1: VTD tool (local dev only — won't exist on Vercel)
   try {
     const { stdout } = await execFileAsync(
       "node",
@@ -53,10 +80,10 @@ export async function extractTranscript(youtubeUrl: string): Promise<string> {
       return transcript;
     }
   } catch {
-    // VTD failed, try web API fallbacks
+    // VTD not available or failed, try web API fallbacks
   }
 
-  // Fallback 1: youtube-transcript.io
+  // Fallback 2: youtube-transcript.io
   try {
     const response = await fetch(
       `https://www.youtube-transcript.io/api/transcript?url=${encodeURIComponent(youtubeUrl)}`,
@@ -72,7 +99,7 @@ export async function extractTranscript(youtubeUrl: string): Promise<string> {
     // Continue
   }
 
-  // Fallback 2: Supadata
+  // Fallback 3: Supadata
   try {
     const response = await fetch(
       `https://api.supadata.ai/v1/youtube/transcript?url=${encodeURIComponent(youtubeUrl)}`,
